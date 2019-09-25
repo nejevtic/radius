@@ -1,0 +1,61 @@
+#!/usr/bin/python2
+
+import binascii
+import base64
+import subprocess
+import os
+import sys
+
+otpkey = str(sys.argv[2])
+user = sys.argv[1]
+my_env = os.environ.copy()
+my_env["KRB5_CLIENT_KTNAME"]="/etc/raddb/radius.keytab"
+my_env["KRB5CCNAME"]="MEMORY:"
+
+def relaxed_decode_base64(data):
+    # If there is already padding we strip it as we calculate padding ourselves.
+    if '=' in data:
+       data = data[:data.index('=')]
+    # We need to add padding, how many bytes are missing.
+    missing_padding = len(data) % 4
+    # We would be mid-way through a byte.
+    if missing_padding == 1:
+       data += 'A=='
+    # Jut add on the correct length of padding.
+    elif missing_padding == 2:
+       data += '=='
+    elif missing_padding == 3:
+       data += '='
+    # Actually perform the Base64 decode.
+    return base64.b64decode(data).encode('hex')
+
+
+def compare(a,b):
+    if a == b:
+        print "Provided argument is "+otpkey+" and result of hashing is "+result+".\n"
+        print "We have a match!"
+        sys.exit(0)
+    else:
+        print "Provided argument is "+otpkey+" and result of hashing is "+result+".\n"
+        print "They don't match!"
+        sys.exit(1)
+
+if __name__=="__main__":
+    print "Radius Environment variables are KRB5CCNAME with value "+my_env["KRB5CCNAME"]+" and KRB5_CLIENT_KTNAME with value "+my_env["KRB5_CLIENT_KTNAME"]
+#    base64cmd = "ipa otptoken-find "+user+" --all | grep Key | awk '{print $2}'"
+    base64cmd = 'ldapsearch -Q -Y GSSAPI -LLL -b cn=otp,{{ radius_ldap_domain }} "(ipatokenOwner=uid='+user+',cn=users,cn=accounts,{{ radius_ldap_domain }})" ipatokenOTPkey | grep -i -i ipatokenOTPkey | awk '+"'{print $2}'"
+    #print base64cmd
+    algcmd = 'ldapsearch -Q -Y GSSAPI -LLL -b cn=otp,{{ radius_ldap_domain }} "(ipatokenOwner=uid='+user+',cn=users,cn=accounts,{{ radius_ldap_domain }})" ipatokenOTPalgorithm | grep -i -i ipatokenOTPalgorithm | awk '+"'{print $2}'"
+    #print algcmd
+    chkbasekey = subprocess.check_output(base64cmd, shell=True, env=my_env)
+    chkalg = subprocess.check_output(algcmd, shell=True, env=my_env)
+    #print chkalg
+    basekey = str(chkbasekey.rstrip('\n'))
+    alg = str(chkalg.rstrip('\n'))
+    hexkey = relaxed_decode_base64(basekey)
+    mycmd = '/bin/oathtool -s30 -d6 --totp='+alg+' '+hexkey
+    #print mycmd
+    chkresult = subprocess.check_output(mycmd, shell=True, env=my_env)
+    result = str(chkresult.rstrip('\n'))
+    compare(result,otpkey)
+

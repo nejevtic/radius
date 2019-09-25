@@ -1,0 +1,16 @@
+{% for client in radius_clients %}
+client {{ client.name }} {
+  ipaddr = {{ client.ipaddr }}
+  proto = *
+  secret = {{ client.secret }}
+{% if client.server is defined %}
+  virtual_server = {{ client.server }}
+{% endif %}
+  require_message_authenticator = no
+  limit {
+    max_connections = 16
+    lifetime = 0
+    idle_timeout = 30
+  }
+}
+{% endfor %}

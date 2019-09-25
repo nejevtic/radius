@@ -1,0 +1,145 @@
+#Same configuration as for wifi - to be used only for upgrade and/or migration scenarios
+
+server default {
+
+  listen {
+    type = auth
+    ipaddr = *
+    port = {{ radius_default_port_auth }}
+    limit {
+      max_connections = 16
+      lifetime = 0
+      idle_timeout = 30
+    }
+  }
+
+  listen {
+    type = acct
+    ipaddr = *
+    port = {{ radius_default_port_acct }}
+    limit {
+    }
+  }
+
+  listen {
+    type = auth
+    ipv6addr = ::
+    port = {{ radius_default_port_auth }}
+    limit {
+      max_connections = 16
+      lifetime = 0
+      idle_timeout = 30
+    }
+  }
+
+  listen {
+    type = acct
+    ipv6addr = ::
+    port = {{ radius_default_port_acct }}
+    limit {
+    }
+  }
+
+  authorize {
+    filter_username
+    preprocess
+    chap
+    mschap
+    digest
+    suffix
+    eap {
+      ok = return
+    }
+    files
+    -sql
+    -ldap
+    expiration
+    logintime
+    pap
+  }
+
+  authenticate {
+    Auth-Type PAP {
+      pap
+    }
+    Auth-Type CHAP {
+      chap
+    }
+    Auth-Type MS-CHAP {
+      mschap
+    }
+    mschap
+    digest
+    Auth-Type LDAP {
+      ldap
+    }
+    eap
+  }
+
+  preacct {
+    preprocess
+    acct_unique
+    suffix
+    files
+  }
+
+  accounting {
+    detail
+    unix
+    -sql
+    exec
+    attr_filter.accounting_response
+  }
+
+  session {
+  }
+
+  post-auth {
+    update {
+      &reply: += &session-state:
+      }
+  {% for vlan in radius_wifi_vlans %}
+    {% if not loop.first %}els{% endif %}if (LDAP-Group == "cn={{ vlan.group }},cn=groups,cn=accounts,{{ network_domain_name | hostname_to_dn }}") {
+      update reply {
+        Fortinet-Group-Name = {{ vlan.group }}
+        Tunnel-Type = VLAN
+        Tunnel-Medium-Type = IEEE-802
+        Tunnel-Private-Group-Id = {{ vlan.id }}
+{% if vlan.group == "trusted-infra" %}
+        Service-Type = Administrative-User
+        Fortinet-Access-Profile = super_admin
+        Cisco-AVPair = "shell:priv-lvl=15"
+{% endif %}
+{% if vlan.group == "infra" %}
+        Service-Type = Administrative-User
+        Fortinet-Access-Profile = readonly
+        Cisco-AVPair = "shell:priv-lvl=4"
+{% endif %}
+      }
+    }
+  {% endfor %}
+    else {
+    # external
+      update reply {
+        Reply-Message := "You are not allowed to access"
+      }
+      reject
+    }
+    exec
+    remove_reply_message_if_eap
+    Post-Auth-Type REJECT {
+      attr_filter.access_reject
+      eap
+      remove_reply_message_if_eap
+    }
+  }
+
+  #
+  pre-proxy {
+  }
+
+  post-proxy {
+    eap
+  }
+}
+

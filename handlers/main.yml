@@ -1,0 +1,7 @@
+---
+- name: Restart radiusd
+  systemd:
+    name: radiusd
+    enabled: yes
+    state: restarted
+    daemon_reload: yes

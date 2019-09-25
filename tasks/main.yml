@@ -1,0 +1,252 @@
+---
+- name: Install FreeRadius packages
+  package:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - "{{ radius_packages + radius_additional_packages }}"
+
+- name: Create Kerberos radius service
+  ipa_service:
+    name: "radius/{{ ansible_fqdn }}"
+    ipa_host: "{{ groups['ipaservers'][0] }}"
+    ipa_user: admin
+    ipa_pass: "{{ ipaadmin_password }}"
+    state: present
+
+- name: Check if the appropriate keytab is already installed
+  stat:
+    path: "{{ radius_keytab }}"
+  register: radius_keytab_register
+
+- block:
+
+  - name: Get valid admin Kerberos token
+    shell: echo {{ ipaadmin_password }} | kinit {{ ipaadmin_principal }}@{{ ipaclient_realm }}
+
+  - name: Create Radius keytab
+    shell: ipa-getkeytab -p radius/{{ ansible_fqdn }} -k {{ radius_keytab }}
+
+  when: radius_keytab_register.stat.isreg is not defined
+
+- name: Set permissions on Radius keytab
+  file:
+    path: "{{ radius_keytab }}"
+    owner: root
+    group: radiusd
+    mode: 0640
+
+- name: Set SELinux file context for Radius certificates folder
+  sefcontext:
+    target: "{{ radius_cert_path }}(/.*)?"
+    #target: "/etc/raddb/certs/freeipa(/.*)?"
+    setype: cert_t
+    state: present
+    ftype: a
+    reload: yes
+    ignore_selinux_state: yes
+
+- name: Create PEM key directory
+  file:
+    path: "{{ radius_cert_path }}"
+    owner: root
+    group: radiusd
+    mode: '0755'
+    state: directory
+
+- name: Request SSL host certificate
+  command: ipa-getcert request \
+    -r -w -k "{{ radius_cert_path }}/{{ ansible_fqdn }}.key" \
+    -f "{{ radius_cert_path }}/{{ ansible_fqdn }}.crt" \
+    -K "radius/{{ ansible_fqdn }}@{{ ipaserver_realm }}" \
+    -g "{{ radius_cert_key_size }}"
+  args:
+    creates: "{{ radius_cert_path }}/{{ ansible_fqdn }}.crt"
+
+- name: Set PEM certificate permissions
+  file:
+    path: "{{ radius_cert_path }}/{{ ansible_fqdn }}.crt"
+    owner: root
+    group: radiusd
+    mode: 0640
+
+- name: Set PEM private key permissions
+  file:
+    path: '{{ radius_cert_path }}/{{ ansible_fqdn }}.key'
+    owner: root
+    group: radiusd
+    mode: 0640
+
+- name: Replace private_key_file entry in eap module
+  replace:
+    path: /etc/raddb/mods-enabled/eap
+    after: 'tls-config tls-common'
+    before: 'tls {'
+    regexp: '(private_key_file\s)(.*)$'
+    replace: 'private_key_file = {{ radius_cert_path }}/{{ ansible_fqdn }}.key'
+  tags: replace_in_eap
+
+- name: Replace certificate_file entry
+  replace:
+    path: /etc/raddb/mods-enabled/eap
+    after: 'tls-config tls-common'
+    before: 'tls {'
+    regexp: '(certificate_file\s)(.*)$'
+    replace: 'certificate_file = {{ radius_cert_path }}/{{ ansible_fqdn }}.crt'
+  tags: replace_in_eap
+
+- name: Replace ca_file entry
+  replace:
+    path: /etc/raddb/mods-enabled/eap
+    after: 'tls-config tls-common'
+    before: 'tls {'
+    regexp: '(ca_file\s)(.*)$'
+    replace: 'ca_file = /etc/ipa/ca.crt'
+  tags: replace_in_eap
+
+- name: Create custom modules
+  copy:
+    src: "etc/raddb/mods-available/{{ item }}"
+    dest: "/etc/raddb/mods-available/{{ item }}"
+    owner: root
+    group: radiusd
+    mode: 0640
+  with_items:
+    -  multiotp
+  notify: Restart radiusd
+
+- name: Enable modules
+  file:
+    src: "../mods-available/{{ item.module }}"
+    dest: "/etc/raddb/mods-enabled/{{ item.module }}"
+    state: link
+    owner: root
+    group: radiusd
+    mode: 0640
+  with_items:
+    - module: krb5
+    - module: ldap
+    - module: multiotp
+  notify: Restart radiusd
+
+- name: Create custom program
+  template:
+    src: "usr/local/bin/{{ item }}.j2"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: 0755
+  with_items:
+    - radius_compare_ext.py
+  notify: Restart radiusd
+
+- name: Set Kerberos configuration
+  replace:
+    path: /etc/raddb/mods-available/krb5
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+  with_items:
+    - regexp: "keytab = .*"
+      replace: "keytab = {{ radius_keytab }}"
+    - regexp: "service_principal = .*"
+      replace: "service_principal = radius/{{ ansible_fqdn }}"
+  notify: Restart radiusd
+
+- name: Enable MS-CHAPv2
+  replace:
+    path: /etc/raddb/mods-available/eap
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+  with_items:
+    - regexp: "default_eap_type = md5"
+      replace: "default_eap_type = mschapv2"
+  notify: Restart radiusd
+
+- name: Set LDAP configuration
+  template:
+    src: "etc/raddb/mods-available/{{ item }}.j2"
+    dest: "/etc/raddb/mods-available/{{ item }}"
+    owner: root
+    group: radiusd
+    mode: 0640
+  with_items:
+    - ldap
+  notify: Restart radiusd
+
+- name: Make service override folder
+  file:
+    path: /etc/systemd/system/radiusd.service.d/
+    state: directory
+    owner: root
+    group: root
+    mode: 0644
+    seuser: system_u
+    serole: object_r
+    setype: systemd_unit_file_t
+  notify: Restart radiusd
+
+- name: Adjust Radius systemd unit
+  copy:
+    dest: /etc/systemd/system/radiusd.service.d/10-override.conf
+    content: |
+      [Service]
+      Environment=KRB5_CLIENT_KTNAME={{ radius_keytab }}
+      Environment=KRB5CCNAME=MEMORY:
+    owner: root
+    group: root
+    mode: 0644
+    seuser: system_u
+    serole: object_r
+    setype: systemd_unit_file_t
+  notify: Restart radiusd
+
+- name: Set configuration on sites
+  template:
+    src: "etc/raddb/sites-available/{{ item }}.j2"
+    dest: "/etc/raddb/sites-available/{{ item }}"
+    owner: root
+    group: radiusd
+    mode: 0640
+  with_items:
+    - default
+    - inner-tunnel
+    - wifi
+    - vpn
+    - wired
+  notify: Restart radiusd
+
+- name: Enable sites
+  file:
+    src: "../sites-available/{{ item }}"
+    dest: "/etc/raddb/sites-enabled/{{ item }}"
+    state: link
+    owner: root
+    group: radiusd
+    mode: 0640
+    force: yes
+  with_items:
+    # No default site
+    - inner-tunnel
+    - wifi
+    - vpn
+    - wired
+  notify: Restart radiusd
+
+- name: Set client configuration
+  template:
+    src: etc/raddb/clients.conf.j2
+    dest: /etc/raddb/clients.conf
+    owner: root
+    group: radiusd
+    mode: 0640
+  notify: Restart radiusd
+
+- name: Set Huntgroups configuration
+  copy:
+    dest: "/etc/raddb/mods-config/preprocess/huntgroups"
+    content: |
+      {{ radius_huntgroups }}
+    owner: root
+    group: radiusd
+    mode: 0640
+  notify: Restart radiusd

@@ -1,0 +1,4 @@
+---
+radius_keytab: /etc/raddb/radius.keytab
+radius_ldap_domain: "dc=example,dc=com"
+radius_huntgroups: ""

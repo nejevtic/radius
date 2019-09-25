@@ -1,0 +1,7 @@
+exec multiotp {
+        wait = yes
+        input_pairs = request
+        program = "/usr/local/bin/radius_compare_ext.py %{User-Name} %{User-Password}"
+        shell_escape = yes
+}
+
