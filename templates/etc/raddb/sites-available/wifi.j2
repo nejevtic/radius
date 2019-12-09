@@ -102,16 +102,20 @@ server wifi {
         Fortinet-Group-Name = {{ vlan.group }}
         Tunnel-Type = VLAN
         Tunnel-Medium-Type = IEEE-802
+{% if vlan.id is defined %}
         Tunnel-Private-Group-Id = {{ vlan.id }}
+{% endif %}
 {% if vlan.group == "trusted-infra" %}
         Service-Type = Administrative-User
         Fortinet-Access-Profile = super_admin
         Cisco-AVPair = "shell:priv-lvl=15"
+        Juniper-Local-User-Name = "super-users"
 {% endif %}
 {% if vlan.group == "infra" %}
         Service-Type = Administrative-User
         Fortinet-Access-Profile = readonly
         Cisco-AVPair = "shell:priv-lvl=4"
+        Juniper-Local-User-Name = "readonly-users"
 {% endif %}
       }
     }
