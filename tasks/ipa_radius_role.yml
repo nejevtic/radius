@@ -1,0 +1,18 @@
+---
+- name: FreeIPA | Radius permissions and privileges
+  shell: |
+    ipa permission-add "Read OTP tree" --right=read --attrs=objectclass --attrs=ipatokenOTPkey --attrs=ipatokenOwner --attrs=ipatokenOTPalgorithm --bindtype=permission
+    ipa permission-add "Read ipaNTHash" --right=read --attrs=ipaNTHash
+    ipa privilege-add "Radius server" --desc "Allow reading additional permissions required for OTP/MS-CHAPv2"
+    ipa privilege-add-permission "Radius server" --permissions="Read ipaNTHash" --permissions="Read OTP tree"
+
+- name: FreeIPA | Radius role
+  ipa_role:
+    name: "Radius Server"
+    description: "Additional permissions required for Radius"
+    privilege:
+      - "Radius server"
+    state: present
+    ipa_host: "{{ groups['ipaservers'][0] }}"
+    ipa_user: admin
+    ipa_pass: "{{ ipaadmin_password }}"  # built-in role

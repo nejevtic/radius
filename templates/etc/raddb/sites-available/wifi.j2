@@ -106,16 +106,26 @@ server wifi {
         Tunnel-Private-Group-Id = {{ vlan.id }}
 {% endif %}
 {% if vlan.group == "trusted-infra" %}
+        # Juniper:
         Service-Type = Administrative-User
-        Fortinet-Access-Profile = super_admin
-        Cisco-AVPair = "shell:priv-lvl=15"
         Juniper-Local-User-Name = "super-users"
+        # Fortinet:
+        Fortinet-Access-Profile = super_admin
+        # Cisco:
+        Cisco-AVPair = "shell:priv-lvl=15"
+        # Meinberg:
+        MBG-Management-Privilege-Level = 100
 {% endif %}
 {% if vlan.group == "infra" %}
+        # Juniper:
         Service-Type = Administrative-User
-        Fortinet-Access-Profile = readonly
-        Cisco-AVPair = "shell:priv-lvl=4"
         Juniper-Local-User-Name = "readonly-users"
+        # Fortinet:
+        Fortinet-Access-Profile = readonly
+        # Cisco:
+        Cisco-AVPair = "shell:priv-lvl=4"
+        # Meinberg:
+        MBG-Management-Privilege-Level = 300
 {% endif %}
       }
     }

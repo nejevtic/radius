@@ -1,4 +1,9 @@
 ---
+- name: Set Kerberos service names
+  set_fact:
+    krb_service_short: "radius/{{ ansible_fqdn }}"
+    krb_service_long: "radius/{{ ansible_fqdn }}@{{ ipaserver_realm }}"
+
 - name: Install FreeRadius packages
   package:
     name: "{{ item }}"
@@ -6,12 +11,19 @@
   with_items:
     - "{{ radius_packages + radius_additional_packages }}"
 
-- name: Create Kerberos radius service
-  ipa_service:
-    name: "radius/{{ ansible_fqdn }}"
-    ipa_host: "{{ groups['ipaservers'][0] }}"
-    ipa_user: admin
-    ipa_pass: "{{ ipaadmin_password }}"
+# Used by role checking, creation, keytab etc.
+- name: FreeIPA | Get valid admin Kerberos token
+  shell: echo {{ ipaadmin_password }} | kinit {{ ipaadmin_principal }}@{{ ipaclient_realm }}
+  register: ipa_admin_token
+  changed_when: False
+  check_mode: no
+  failed_when: ipa_admin_token.rc >= 2
+
+- name: FreeIPA | Create Kerberos radius service
+  ipaservice:
+    name: "{{ krb_service_short }}"
+    ipaadmin_principal: admin
+    ipaadmin_password: "{{ ipaadmin_password }}"
     state: present
 
 - name: Check if the appropriate keytab is already installed
@@ -19,14 +31,8 @@
     path: "{{ radius_keytab }}"
   register: radius_keytab_register
 
-- block:
-
-  - name: Get valid admin Kerberos token
-    shell: echo {{ ipaadmin_password }} | kinit {{ ipaadmin_principal }}@{{ ipaclient_realm }}
-
-  - name: Create Radius keytab
-    shell: ipa-getkeytab -p radius/{{ ansible_fqdn }} -k {{ radius_keytab }}
-
+- name: FreeIPA | Create Radius keytab
+  shell: ipa-getkeytab -p {{ krb_service_short }} -k {{ radius_keytab }}
   when: radius_keytab_register.stat.isreg is not defined
 
 - name: Set permissions on Radius keytab
@@ -54,12 +60,13 @@
     mode: '0755'
     state: directory
 
-- name: Request SSL host certificate
+- name: FreeIPA | Request SSL host certificate
   command: ipa-getcert request \
     -r -w -k "{{ radius_cert_path }}/{{ ansible_fqdn }}.key" \
     -f "{{ radius_cert_path }}/{{ ansible_fqdn }}.crt" \
-    -K "radius/{{ ansible_fqdn }}@{{ ipaserver_realm }}" \
-    -g "{{ radius_cert_key_size }}"
+    -K "{{ krb_service_long }}" \
+    -g "{{ radius_cert_key_size }}" \
+    -C "systemctl restart radiusd"
   args:
     creates: "{{ radius_cert_path }}/{{ ansible_fqdn }}.crt"
 
@@ -149,7 +156,7 @@
     - regexp: "keytab = .*"
       replace: "keytab = {{ radius_keytab }}"
     - regexp: "service_principal = .*"
-      replace: "service_principal = radius/{{ ansible_fqdn }}"
+      replace: "service_principal = {{ krb_service_short }}"
   notify: Restart radiusd
 
 - name: Enable MS-CHAPv2
@@ -197,7 +204,7 @@
     mode: 0644
     seuser: system_u
     serole: object_r
-    setype: systemd_unit_file_t
+    setype: radiusd_unit_file_t
   notify: Restart radiusd
 
 - name: Set configuration on sites
@@ -232,6 +239,14 @@
     - wired
   notify: Restart radiusd
 
+- name: Disable sites
+  file:
+    dest: "/etc/raddb/sites-enabled/{{ item }}"
+    state: absent
+  with_items:
+    - default
+  notify: Restart radiusd
+
 - name: Set client configuration
   template:
     src: etc/raddb/clients.conf.j2
@@ -250,3 +265,17 @@
     group: radiusd
     mode: 0640
   notify: Restart radiusd
+
+- name: FreeIPA | Check Radius roles, privileges and permissions
+  command: ipa role-show "Radius server"
+  register: ipa_role_check
+  changed_when: False
+  check_mode: no
+  failed_when: ipa_role_check.rc >= 2
+
+- include: ipa_radius_role.yml
+  when: '"Privileges: Radius server" not in ipa_role_check.stdout'
+
+- name: FreeIPA | Radius Kerberos service in Radius role
+  command: ipa role-add-member "Radius server" --services "{{ krb_service_long }}"
+  when: 'krb_service_long not in ipa_role_check.stdout'

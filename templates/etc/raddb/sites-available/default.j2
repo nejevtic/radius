@@ -112,12 +112,14 @@ server default {
         Fortinet-Access-Profile = super_admin
         Cisco-AVPair = "shell:priv-lvl=15"
         Juniper-Local-User-Name = "super-users"
+        MBG-Management-Privilege-Level = 100
 {% endif %}
 {% if vlan.group == "infra" %}
         Service-Type = Administrative-User
         Fortinet-Access-Profile = readonly
         Cisco-AVPair = "shell:priv-lvl=4"
         Juniper-Local-User-Name = "readonly-users"
+        MBG-Management-Privilege-Level = 300
 {% endif %}
       }
     }
